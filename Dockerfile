@@ -2,8 +2,8 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci
+COPY package.json ./
+RUN npm install
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -16,7 +16,7 @@ WORKDIR /app
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/package-lock.json* ./
+COPY --from=builder /app/package-lock.json ./package-lock.json
 
 ENV NODE_ENV=production
 
