@@ -1,7 +1,7 @@
 {
   "name": "brave-search-mcp-railway",
   "version": "1.0.0",
-  "description": "Brave Search MCP server with SSE and Streamable HTTP support",
+  "description": "Brave Search MCP server with SSE and Streamable HTTP support via mcp-proxy",
   "type": "module",
   "scripts": {
     "start": "node src/server.js"
@@ -9,7 +9,6 @@
   "dependencies": {
     "@brave/brave-search-mcp-server": "^2.0.76",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "cors": "^2.8.5",
-    "express": "^4.21.0"
+    "mcp-proxy": "^5.9.0"
   }
 }
