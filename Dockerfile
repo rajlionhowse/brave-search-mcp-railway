@@ -5,23 +5,23 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install
 
-COPY tsconfig.json ./
-COPY src ./src
-
-RUN npm run build
-
 FROM node:22-alpine AS release
 
 WORKDIR /app
 
-COPY --from=builder /app/dist ./dist
+RUN npm install -g mcp-proxy
+
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/package-lock.json ./package-lock.json
 
-ENV NODE_ENV=production
+COPY src ./src
+COPY startup.sh ./startup.sh
 
-RUN npm ci --omit=dev
+RUN chmod +x startup.sh
+
+ENV NODE_ENV=production
 
 EXPOSE 8080
 
-CMD ["node", "dist/index.js"]
+CMD ["sh", "startup.sh"]

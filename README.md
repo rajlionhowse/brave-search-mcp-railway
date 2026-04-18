@@ -1,42 +1,40 @@
 # Brave Search MCP - Railway Deployment
 
-Brave Search MCP server wrapped with Bearer token authentication, optimized for Railway deployment and Lobe Chat PWA integration.
+Brave Search MCP server with **SSE** and **Streamable HTTP** support via [mcp-proxy](https://github.com/punkpeye/mcp-proxy), optimized for Railway deployment.
 
 ## Overview
 
-This is a thin wrapper around [@brave/brave-search-mcp-server](https://github.com/brave/brave-search-mcp-server) that adds:
+This deployment wraps [@brave/brave-search-mcp-server](https://github.com/brave/brave-search-mcp-server) with [mcp-proxy](https://github.com/punkpeye/mcp-proxy) to expose both transport protocols from a single endpoint:
 
-- **Bearer token authentication** via `Authorization: Bearer <token>` header
-- **CORS headers** for browser-based clients (Lobe Chat PWA)
-- **Streamable HTTP** endpoint at `/mcp` (SSE not required)
-- **Health check** endpoint at `/health`
-- **Railway-ready** Dockerfile
+- **Streamable HTTP** at `/mcp` — for Lobe Chat PWA and other Streamable HTTP clients
+- **SSE** at `/sse` — for Bolt AI iOS and other SSE-only clients
+
+## Architecture
+
+```
+Client → Railway → Express wrapper (auth + CORS + proxy)
+                    ├── /mcp → Bearer token auth → mcp-proxy → Brave MCP (stdio)
+                    └── /sse → No auth → mcp-proxy → Brave MCP (stdio)
+                                          ↓
+                                    Brave Search API
+```
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
 | `BRAVE_API_KEY` | Yes | Your Brave Search API key from [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com/app/keys) |
-| `MCP_API_KEY` | Yes | Your custom auth key — used as the Bearer token for API access |
+| `MCP_API_KEY` | Yes | Your custom auth key — used as Bearer token for `/mcp` endpoint |
 | `PORT` | No | Port to listen on (Railway auto-injects this, default: `8080`) |
 
-## Local Development
+## Endpoints
 
-```bash
-npm install
-cp .env.example .env
-# Edit .env with your API keys
-npm run dev
-```
-
-## Deploy to Railway
-
-1. Push this repo to GitHub
-2. In Railway, create a new service from your GitHub repo
-3. Set environment variables:
-   - `BRAVE_API_KEY` — your Brave Search API key
-   - `MCP_API_KEY` — generate a strong secret key
-4. Railway will auto-detect the Dockerfile and deploy
+| Endpoint | Auth | Transport | Client |
+|---|---|---|---|
+| `/mcp` | Bearer token (`MCP_API_KEY`) | Streamable HTTP | Lobe Chat PWA |
+| `/sse` | None | SSE | Bolt AI iOS |
+| `/ping` | None | — | Health check (mcp-proxy internal) |
+| `/health` | None | — | Health check (wrapper) |
 
 ## Configure Lobe Chat PWA
 
@@ -48,28 +46,29 @@ npm run dev
 6. **API Key**: paste your `MCP_API_KEY` value
 7. Click **Test connection** → you should see Brave search tools listed
 8. Click **Install**
-9. Enable the skill on any agent you want to use it with
 
-## Endpoints
+## Configure Bolt AI iOS
 
-| Endpoint | Auth Required | Description |
-|---|---|---|
-| `/mcp` | Yes (Bearer token) | Streamable HTTP MCP endpoint |
-| `/ping` | No | Health check (used by Brave MCP internally) |
-| `/health` | No | Simple health check for Railway monitoring |
+1. Go to **Settings → MCP Servers → Add**
+2. **Server Name**: `brave-search`
+3. **Server URL**: `https://your-app.railway.app/sse`
+4. Tap **Add Server**
+
+## Deploy to Railway
+
+1. Connect this GitHub repo to your Railway project
+2. Set environment variables:
+   - `BRAVE_API_KEY` — your Brave Search API key
+   - `MCP_API_KEY` — generate a strong secret key
+3. Railway auto-detects the Dockerfile and deploys
 
 ## Updating
 
-When a new version of `@brave/brave-search-mcp-server` is released:
+Dependabot automatically creates PRs when new versions of `@brave/brave-search-mcp-server` are released. Just merge the PR and Railway auto-redeploys.
 
-```bash
-npm update @brave/brave-search-mcp-server
-git add package.json package-lock.json
-git commit -m "chore: update brave-search-mcp-server"
-git push
-```
+## Security Note
 
-Railway will auto-redeploy.
+The `/sse` endpoint has no authentication (Bolt AI iOS does not support custom headers). Since the MCP only performs read-only Brave Search queries, the risk is limited to API quota consumption. Monitor your Brave API usage in the dashboard and rotate `BRAVE_API_KEY` if needed.
 
 ## License
 
