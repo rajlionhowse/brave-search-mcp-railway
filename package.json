@@ -4,11 +4,12 @@
   "description": "Brave Search MCP server with SSE and Streamable HTTP support via mcp-proxy",
   "type": "module",
   "scripts": {
-    "start": "sh startup.sh"
+    "start": "node src/server.js"
   },
   "dependencies": {
     "@brave/brave-search-mcp-server": "^2.0.76",
     "express": "^4.21.0",
-    "http-proxy-middleware": "^3.0.0"
+    "http-proxy-middleware": "^3.0.0",
+    "mcp-proxy": "^5.9.0"
   }
 }
