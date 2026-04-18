@@ -1,9 +1,22 @@
-import { spawn } from 'node:child_process';
-import http from 'node:http';
 import express from 'express';
-import { createProxyMiddleware } from 'http-proxy-middleware';
+import cors from 'cors';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ListPromptsRequestSchema,
+  LoggingMessageNotificationSchema,
+  ResourceUpdatedNotificationSchema,
+  ToolListChangedNotificationSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
-const INTERNAL_PORT = process.env.INTERNAL_PROXY_PORT || '3000';
 const PORT = process.env.PORT || '8080';
 const MCP_API_KEY = process.env.MCP_API_KEY;
 
@@ -12,108 +25,166 @@ if (!MCP_API_KEY) {
   process.exit(1);
 }
 
-const mcpProxy = spawn(
-  'npx',
-  [
-    '--yes', 'mcp-proxy',
-    '--port', INTERNAL_PORT,
-    '--stateless',
-    '--',
-    'npx', '--yes', '@brave/brave-search-mcp-server',
-  ],
-  { stdio: 'inherit' },
-);
+const transports = new Map();
 
-mcpProxy.on('error', (err) => {
-  console.error('mcp-proxy failed to start:', err);
-  process.exit(1);
-});
+function createBraveServer() {
+  const server = new Server(
+    { name: 'brave-search-mcp-railway', version: '1.0.0' },
+    { capabilities: { tools: {}, resources: {}, prompts: {}, logging: {} } }
+  );
 
-function waitForMcpProxy() {
-  return new Promise((resolve, reject) => {
-    let attempts = 0;
-    function check() {
-      attempts++;
-      if (attempts > 60) {
-        reject(new Error('mcp-proxy failed to start after 30 seconds'));
-        return;
-      }
-      const req = http.get(`http://localhost:${INTERNAL_PORT}/ping`, (res) => {
-        if (res.statusCode === 200) resolve();
-        else setTimeout(check, 500);
-      });
-      req.on('error', () => setTimeout(check, 500));
-    }
-    check();
+  const transport = new StdioClientTransport({
+    command: 'node',
+    args: ['node_modules/@brave/brave-search-mcp-server/dist/index.js'],
+    env: {
+      ...process.env,
+      BRAVE_MCP_TRANSPORT: 'stdio',
+    },
   });
+
+  const client = new Client(
+    { name: 'brave-search-proxy', version: '1.0.0' },
+    { capabilities: { tools: {}, resources: {}, prompts: {} } }
+  );
+
+  client.connect(transport);
+
+  server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+    const result = await client.listTools();
+    return result;
+  });
+
+  server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
+    const result = await client.listResources();
+    return result;
+  });
+
+  server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
+    const result = await client.listPrompts();
+    return result;
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const result = await client.callTool(request.params);
+    return result;
+  });
+
+  client.setNotificationHandler(LoggingMessageNotificationSchema, (notification) => {
+    server.sendLoggingMessage(notification.params);
+  });
+
+  client.setNotificationHandler(ResourceUpdatedNotificationSchema, (notification) => {
+    server.sendResourceUpdated(notification.params);
+  });
+
+  client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+    server.sendToolListChanged();
+  });
+
+  return server;
 }
 
-waitForMcpProxy()
-  .then(() => {
-    console.log('mcp-proxy is ready');
+const app = express();
 
-    const app = express();
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: '*',
+  credentials: true,
+  exposedHeaders: ['Mcp-Session-Id'],
+}));
 
-    app.use((req, res, next) => {
-      res.header('Access-Control-Allow-Origin', '*');
-      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.header('Access-Control-Allow-Headers', '*');
-      res.header('Access-Control-Allow-Credentials', 'true');
-      res.header('Access-Control-Expose-Headers', 'Mcp-Session-Id');
-      if (req.method === 'OPTIONS') return res.sendStatus(204);
-      next();
+app.use(express.json());
+
+app.use('/mcp', (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32000, message: 'Unauthorized: Bearer token required' },
     });
-
-    app.use('/mcp', (req, res, next) => {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({
-          jsonrpc: '2.0',
-          id: null,
-          error: { code: -32000, message: 'Unauthorized: Bearer token required' },
-        });
-      }
-      const token = authHeader.slice(7);
-      if (token !== MCP_API_KEY) {
-        return res.status(401).json({
-          jsonrpc: '2.0',
-          id: null,
-          error: { code: -32000, message: 'Unauthorized: Invalid token' },
-        });
-      }
-      next();
+  }
+  const token = authHeader.slice(7);
+  if (token !== MCP_API_KEY) {
+    return res.status(401).json({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32000, message: 'Unauthorized: Invalid token' },
     });
+  }
+  next();
+});
 
-    app.use(
-      ['/mcp', '/sse'],
-      createProxyMiddleware({
-        target: `http://localhost:${INTERNAL_PORT}`,
-        changeOrigin: true,
-        proxyTimeout: 300000,
-      }),
-    );
+app.all('/mcp', async (req, res) => {
+  try {
+    const sessionId = req.headers['mcp-session-id'];
+    let transport;
 
-    app.get('/health', (req, res) => {
-      res.json({ status: 'ok', service: 'brave-search-mcp' });
-    });
+    if (sessionId && transports.has(sessionId)) {
+      transport = transports.get(sessionId);
+    } else {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          transports.set(sid, transport);
+        },
+      });
+    }
 
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Brave Search MCP wrapper running on port ${PORT}`);
-      console.log(`Streamable HTTP: http://0.0.0.0:${PORT}/mcp`);
-      console.log(`SSE: http://0.0.0.0:${PORT}/sse`);
-    });
+    const server = createBraveServer();
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error('Streamable HTTP error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32603, message: 'Internal server error' },
+      });
+    }
+  }
+});
 
-    mcpProxy.on('exit', (code) => {
-      console.log(`mcp-proxy exited with code ${code}`);
-      process.exit(code || 1);
-    });
+app.get('/sse', async (req, res) => {
+  try {
+    const transport = new SSEServerTransport('/message', res);
+    const server = createBraveServer();
+    await server.connect(transport);
+  } catch (error) {
+    console.error('SSE error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
 
-    process.on('SIGTERM', () => {
-      mcpProxy.kill('SIGTERM');
-      process.exit(0);
-    });
-  })
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+app.post('/message', async (req, res) => {
+  try {
+    const sessionId = req.query.sessionId;
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId required' });
+    }
+    const transport = transports.get(sessionId);
+    if (!transport) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    await transport.handlePostMessage(req, res, req.body);
+  } catch (error) {
+    console.error('SSE message error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'brave-search-mcp' });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Brave Search MCP running on port ${PORT}`);
+  console.log(`Streamable HTTP: http://0.0.0.0:${PORT}/mcp`);
+  console.log(`SSE: http://0.0.0.0:${PORT}/sse`);
+});
