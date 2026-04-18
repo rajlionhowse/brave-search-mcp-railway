@@ -14,7 +14,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 const PORT = process.env.PORT || '8080';
@@ -27,62 +26,23 @@ if (!MCP_API_KEY) {
 
 const transports = new Map();
 
-function createBraveServer() {
-  const server = new Server(
-    { name: 'brave-search-mcp-railway', version: '1.0.0' },
-    { capabilities: { tools: {}, resources: {}, prompts: {}, logging: {} } }
-  );
+const stdioTransport = new StdioClientTransport({
+  command: 'node',
+  args: ['node_modules/@brave/brave-search-mcp-server/dist/index.js'],
+  env: {
+    ...process.env,
+    BRAVE_MCP_TRANSPORT: 'stdio',
+  },
+});
 
-  const transport = new StdioClientTransport({
-    command: 'node',
-    args: ['node_modules/@brave/brave-search-mcp-server/dist/index.js'],
-    env: {
-      ...process.env,
-      BRAVE_MCP_TRANSPORT: 'stdio',
-    },
-  });
+const braveClient = new Client(
+  { name: 'brave-search-proxy', version: '1.0.0' },
+  { capabilities: { tools: {}, resources: {}, prompts: {} } }
+);
 
-  const client = new Client(
-    { name: 'brave-search-proxy', version: '1.0.0' },
-    { capabilities: { tools: {}, resources: {}, prompts: {} } }
-  );
-
-  client.connect(transport);
-
-  server.setRequestHandler(ListToolsRequestSchema, async (request) => {
-    const result = await client.listTools();
-    return result;
-  });
-
-  server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
-    const result = await client.listResources();
-    return result;
-  });
-
-  server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
-    const result = await client.listPrompts();
-    return result;
-  });
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const result = await client.callTool(request.params);
-    return result;
-  });
-
-  client.setNotificationHandler(LoggingMessageNotificationSchema, (notification) => {
-    server.sendLoggingMessage(notification.params);
-  });
-
-  client.setNotificationHandler(ResourceUpdatedNotificationSchema, (notification) => {
-    server.sendResourceUpdated(notification.params);
-  });
-
-  client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
-    server.sendToolListChanged();
-  });
-
-  return server;
-}
+console.log('Connecting to Brave MCP server via stdio...');
+await braveClient.connect(stdioTransport);
+console.log('Connected to Brave MCP server');
 
 const app = express();
 
@@ -132,7 +92,39 @@ app.all('/mcp', async (req, res) => {
       });
     }
 
-    const server = createBraveServer();
+    const server = new Server(
+      { name: 'brave-search-mcp-railway', version: '1.0.0' },
+      { capabilities: { tools: {}, resources: {}, prompts: {}, logging: {} } }
+    );
+
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const result = await braveClient.listTools();
+      return result;
+    });
+
+    server.setRequestHandler(ListResourcesRequestSchema, async () => {
+      const result = await braveClient.listResources();
+      return result;
+    });
+
+    server.setRequestHandler(ListPromptsRequestSchema, async () => {
+      const result = await braveClient.listPrompts();
+      return result;
+    });
+
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const result = await braveClient.callTool(request.params);
+      return result;
+    });
+
+    braveClient.setNotificationHandler(LoggingMessageNotificationSchema, (notification) => {
+      server.sendLoggingMessage(notification.params);
+    });
+
+    braveClient.setNotificationHandler(ResourceUpdatedNotificationSchema, (notification) => {
+      server.sendResourceUpdated(notification.params);
+    });
+
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (error) {
@@ -150,7 +142,39 @@ app.all('/mcp', async (req, res) => {
 app.get('/sse', async (req, res) => {
   try {
     const transport = new SSEServerTransport('/message', res);
-    const server = createBraveServer();
+    const server = new Server(
+      { name: 'brave-search-mcp-railway', version: '1.0.0' },
+      { capabilities: { tools: {}, resources: {}, prompts: {}, logging: {} } }
+    );
+
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const result = await braveClient.listTools();
+      return result;
+    });
+
+    server.setRequestHandler(ListResourcesRequestSchema, async () => {
+      const result = await braveClient.listResources();
+      return result;
+    });
+
+    server.setRequestHandler(ListPromptsRequestSchema, async () => {
+      const result = await braveClient.listPrompts();
+      return result;
+    });
+
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const result = await braveClient.callTool(request.params);
+      return result;
+    });
+
+    braveClient.setNotificationHandler(LoggingMessageNotificationSchema, (notification) => {
+      server.sendLoggingMessage(notification.params);
+    });
+
+    braveClient.setNotificationHandler(ResourceUpdatedNotificationSchema, (notification) => {
+      server.sendResourceUpdated(notification.params);
+    });
+
     await server.connect(transport);
   } catch (error) {
     console.error('SSE error:', error);
